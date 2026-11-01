@@ -1,0 +1,6 @@
+# Shell scripts run on the car: always LF
+*.sh text eol=lf
+*.py text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+VERSION text eol=lf
