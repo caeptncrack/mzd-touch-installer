@@ -11,7 +11,7 @@ the GNU General Public License as published by the Free Software Foundation,
 either version 3 of the License, or (at your option) any later version.
 See [LICENSE](LICENSE).
 
-## Included third-party software (on the built stick, unmodified)
+## Included third-party software (on the built stick)
 
 ### oem-aa-mod 0.10.0 — folder `aa-mod/` on the stick
 
@@ -25,12 +25,16 @@ See [LICENSE](LICENSE).
   (AGPL-3.0).
 
 The three `libpatch-*.so` files, `libpatch.conf` and both
-`aap_system_attributes*.xml` files are taken byte for byte from
-`oem-aa-mod-0.10.0.zip` (SHA-256
-`ba7a0c285269a87e8a199e38517de05da749a67df7ca016abb6d15e65112dc6a`).
+`aap_system_attributes*.xml` files are taken from `oem-aa-mod-0.10.0.zip`
+(SHA-256 `ba7a0c285269a87e8a199e38517de05da749a67df7ca016abb6d15e65112dc6a`).
 This repository does not contain them; `tools/build_stick.py` downloads
-them from the upstream release. The shims and `libpatch.conf` are installed
-as they are. The two XML files are verified on the stick but not installed:
+them from the upstream release. The shims are installed as they are.
+`libpatch.conf` is modified in one line: `use_protocol_v1_6 = true` becomes
+`use_protocol_v1_6 = false` (the upstream default; the car keeps offering
+Android Auto 1.5, see README, "Android Auto 1.5 and wireless adapters"), and
+the `aap_service` shim, which only acts at 1.6, is not installed. All other
+lines of `libpatch.conf` are unchanged; the stick's `aa-mod/SOURCE.txt`
+states the change. The two XML files are verified on the stick but not installed:
 the installer adds their touch, media-pause and navigation entries to the
 car's own XML files and leaves the rest of those files unchanged (see
 README, "The Android Auto XML").

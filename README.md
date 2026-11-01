@@ -10,7 +10,7 @@
 | Should work on | every region of 74.00.324 / 74.00.324A (for example North America). The installer tells you when your unit differs from the tested build and asks before it changes anything. Reports are welcome. |
 | Needs | a USB stick (FAT32) and nothing else: no computer in the car, no original Mazda files |
 
-This project packages two community projects; their files are included **unmodified**:
+This project packages two community projects; their files are included **unmodified**, apart from one setting in oem-aa-mod's `libpatch.conf` (Android Auto 1.5 instead of 1.6, see [Android Auto 1.5 and wireless adapters](#android-auto-15-and-wireless-adapters)):
 
 | Part | Project | Author | License |
 |---|---|---|---|
@@ -27,13 +27,13 @@ All credit for what these two do goes to their authors. Please star and support 
 
 ## What you get
 
-**Android Auto touch** (oem-aa-mod, its release configuration as published):
+**Android Auto touch** (oem-aa-mod, its release configuration with Android Auto 1.6 switched off):
 
 - touch input in Android Auto on the Mazda Connect screen
-- turn-by-turn guidance from Android Auto on the head-up display, where fitted
+- turn-by-turn guidance from Android Auto on the head-up display, where fitted (turn arrow, distance, street name)
 - mute pauses the phone's media and unmute resumes it
 - Mazda Connect no longer starts Android Auto media by itself (start playback from Android Auto or the phone)
-- Android Auto protocol 1.6 towards the phone (needed for the head-up display guidance)
+- Android Auto 1.5 towards the phone, as from the factory, so wired phones and wireless adapters connect as before (see [below](#android-auto-15-and-wireless-adapters))
 - the Android Auto picture keeps the car's own video settings (see below)
 
 See the [oem-aa-mod README](https://github.com/VitaliyKurokhtin/oem-aa-mod) for details of each option.
@@ -56,6 +56,7 @@ See the [oem-aa-mod README](https://github.com/VitaliyKurokhtin/oem-aa-mod) for 
    | nothing installed | **Install** · Diagnosis · Cancel |
    | both installed | **Remove both** · Diagnosis · Cancel |
    | one of them installed | **Install** · Remove · Cancel |
+   | an older version of Android Auto touch installed | **Update** · Remove both (or Remove) · Cancel, see [Update from 1.0.0](#update-from-100) |
 
 4. Choose **Install**. A confirmation opens and says in a few lines what will happen; tap **Start** (**Back** returns to the start dialog). Every button of the start dialog asks like this first.
 5. While it works the screen says *Do not pull the stick*. Pull the stick only when the screen tells you to: *Remove the USB* before the restart, or *You can pull the stick now* when a run ends without one. Mazda Connect restarts by itself (or asks *Restart now*).
@@ -68,6 +69,23 @@ If your unit is not the tested EU build, the installer says so ("differs from th
 Plug the same stick in again, choose **Remove both** and confirm with **Start**. Android Auto touch is restored from the backup taken on your car, byte for byte; TouchTune restores its own backup. Mazda Connect restarts at the end. You do not need any original Mazda files.
 
 After an official Mazda software update the changes are gone, but the shims in `/data_persist` stay. Run the stick again: it notices the update, takes a new backup and installs again.
+
+## Update from 1.0.0
+
+Put the new release on a stick as in [Use](#use), step 2 (an empty stick is simplest; keep the `backup-aa-touch-*` folder of the old stick somewhere safe), and plug it in. The start dialog shows *Android Auto touch: older version installed* and offers **Update**. The update works in place:
+
+- it uses the backup your first installation took on the car (no new backup: your factory files stay the reference)
+- it rebuilds the service configuration from that backup for Android Auto 1.5, moves oem-aa-mod's `aap_service` shim aside on the car and installs the new `libpatch.conf`
+- it checks the complete result like a new installation; a failure rolls back to your original files
+- if TouchTune is not installed yet, it is installed in the same run
+
+Mazda Connect restarts at the end. Installations made by early test builds, which copied oem-aa-mod's XML files, are recognized and updated the same way: the XMLs are rebuilt from your car's own files. **Remove both** works on an old installation as well and restores your original files byte for byte; you do not need to update first. A state the installer cannot attribute to one of its versions shows as *partially installed*, and **Install** repairs it with the same backup.
+
+## Android Auto 1.5 and wireless adapters
+
+oem-aa-mod's release `libpatch.conf` sets `use_protocol_v1_6 = true`: the car then offers the phone Android Auto 1.6, and the phone sends the full navigation data (including lanes) for the head-up display. Over a wireless connection (a wireless Android Auto adapter in the USB port) a phone that sees 1.6 skips the Bluetooth pairing request that Mazda Connect waits for before it shows Android Auto. oem-aa-mod bridges this for adapters whose USB name it recognizes (`bt_pairing_bypass_all_devices` extends it to every device); with other adapters there is no picture, and the bridge depends on timing.
+
+This installer therefore ships `libpatch.conf` with that one line set to `use_protocol_v1_6 = false` (the upstream default) and does not load oem-aa-mod's `aap_service` shim, which only acts at 1.6. The car offers Android Auto 1.5 as from the factory, so wired phones and wireless adapters connect as they always did. Touch, mute pauses the phone and the other options are unchanged; the head-up display keeps the turn arrow, the distance and the street name, only lane guidance needs 1.6. Every other line of `libpatch.conf` is the release file byte for byte (`aa-mod/SOURCE.txt` on the stick says the same). Installer 1.0.0 still used the release setting; see [Update from 1.0.0](#update-from-100).
 
 ## The Android Auto XML
 
@@ -134,7 +152,7 @@ Pinned upstream files:
 sh tests/run-tests.sh
 ```
 
-The suite runs on any POSIX shell (Git Bash, Linux, macOS, BusyBox ash in Docker) against a fake Mazda Connect file tree: install, removal, repair, partial states, all injected write faults and their rollback, the dialogs, other regions with unknown binaries, byte-exact removal, and the diagnosis privacy rules. With the upstream ZIPs in `downloads/` it also runs the real stick, and with `MZD_TEST_REAL_ROOTFS=<dump of a 74.00.324A root file system>` the real TouchTune patches and restores the real Common.js.
+The suite runs on any POSIX shell (Git Bash, Linux, macOS, BusyBox ash in Docker) against a fake Mazda Connect file tree: install, removal, repair, partial states, the update in place from older versions, all injected write faults and their rollback, the dialogs, other regions with unknown binaries, byte-exact removal, and the diagnosis privacy rules. With the upstream ZIPs in `downloads/` it also runs the real stick (and, in a git checkout with the tag `v1.0.0`, rebuilds the 1.0.0 stick and updates its installation in place), and with `MZD_TEST_REAL_ROOTFS=<dump of a 74.00.324A root file system>` the real TouchTune patches and restores the real Common.js.
 
 ## Repository layout
 
@@ -150,7 +168,7 @@ tests/run-tests.sh
 ## License and credits
 
 - The scripts in this repository: **GPL-3.0-or-later** ([LICENSE](LICENSE)). Notices and third-party licenses: [NOTICE.md](NOTICE.md).
-- oem-aa-mod by VitaliyKurokhtin: AGPL-3.0. The release files are included unmodified; source: <https://github.com/VitaliyKurokhtin/oem-aa-mod/tree/0.10.0>.
+- oem-aa-mod by VitaliyKurokhtin: AGPL-3.0. The release files are included unmodified, except one line of `libpatch.conf` (`use_protocol_v1_6 = false`); source: <https://github.com/VitaliyKurokhtin/oem-aa-mod/tree/0.10.0>.
 - TouchTune by Miatafy: GPL-3.0, based on MZD-AIO by Trevelopment. Included unmodified; source: <https://github.com/Miatafy/TouchTune>.
 
 Not affiliated with or endorsed by Mazda Motor Corporation, the authors of oem-aa-mod or TouchTune, or Google. Android Auto is a trademark of Google LLC. Modifying the head unit may affect your warranty. This software comes with no warranty; use it at your own risk. "Remove both" is always available.

@@ -27,6 +27,7 @@ import argparse
 import hashlib
 import io
 import os
+import re
 import shutil
 import stat
 import sys
@@ -82,6 +83,13 @@ AA_FILES = {
     "oem-aa-mod-0.10.0/resources/libpatch.conf":
         ("libpatch.conf", "6b32397273f6e445fd8470643cb9b99d4f792f755b89780b3f73af2f1d835582"),
 }
+# libpatch.conf is shipped with one line changed: use_protocol_v1_6 = false
+# (the upstream default; the release file says true). With Android Auto 1.6 a
+# wireless phone skips the Bluetooth pairing request Mazda Connect waits for,
+# so wireless adapters only connect through oem-aa-mod's name-list workaround.
+CONF_V16_ON = re.compile(rb"(?m)^use_protocol_v1_6 = true$")
+CONF_V16_OFF = b"use_protocol_v1_6 = false"
+CONF_SHIPPED_SHA256 = "b874a9cf85916799032ae5b874d88a2f714d733a31a3e6cdeba785c6e25d827a"
 
 TT_TAG = "v1.2.1"
 TT_ZIP = {
@@ -230,7 +238,14 @@ def aa_mod_files(zip_data, license_data, notice_data):
             raise BuildError(f"oem-aa-mod ZIP: {src} missing")
         if sha256_bytes(members[src]) != digest:
             raise BuildError(f"oem-aa-mod ZIP: {src} has an unexpected SHA-256")
-        files[dst] = members[src]
+        data = members[src]
+        if dst == "libpatch.conf":
+            data, count = CONF_V16_ON.subn(CONF_V16_OFF, data)
+            if count != 1 or sha256_bytes(data) != CONF_SHIPPED_SHA256:
+                raise BuildError("libpatch.conf: switching use_protocol_v1_6 off did not give the "
+                                 "expected file")
+            digest = CONF_SHIPPED_SHA256
+        files[dst] = data
         sums.append(f"{digest}  {dst}")
     files["SHA256SUMS"] = ("\n".join(sums) + "\n").encode()
     files["VERSION"] = (AA_TAG + "\n").encode()
@@ -244,10 +259,12 @@ def aa_mod_files(zip_data, license_data, notice_data):
         f"Source:   https://github.com/VitaliyKurokhtin/oem-aa-mod/tree/{AA_TAG}\n"
         f"ZIP SHA-256: {AA_ZIP['sha256']}\n"
         "\n"
-        "The three shims, libpatch.conf and both aap_system_attributes XMLs are\n"
-        "copied unmodified from the release ZIP; SHA256SUMS lists them and is\n"
-        "checked by the installer on the car. LICENSE and NOTICE.md are the\n"
-        f"upstream files of tag {AA_TAG}.\n"
+        "The three shims and both aap_system_attributes XMLs are copied\n"
+        "unmodified from the release ZIP. libpatch.conf is the release file with\n"
+        "one line changed: use_protocol_v1_6 = false (Android Auto 1.5, as from\n"
+        "the factory, so wireless adapters keep their Bluetooth pairing request).\n"
+        "SHA256SUMS lists the files as shipped and is checked by the installer\n"
+        f"on the car. LICENSE and NOTICE.md are the upstream files of tag {AA_TAG}.\n"
     ).encode()
     return files
 
@@ -384,6 +401,8 @@ def verify_tree(root):
                  "aap_system_attributes.xml", "aap_system_attributes_UCP.xml", "libpatch.conf"):
         if sha256_file(root / "aa-mod" / name) != sums.get(name):
             raise BuildError(f"aa-mod/{name} does not match aa-mod/SHA256SUMS")
+    if sums.get("libpatch.conf") != CONF_SHIPPED_SHA256:
+        raise BuildError("aa-mod/libpatch.conf is not the shipped file (use_protocol_v1_6 = false)")
 
 
 def write_tree(files, root):

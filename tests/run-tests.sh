@@ -3,7 +3,8 @@
 #
 # Runs without a car on disposable file trees: a fake Mazda Connect root
 # (MZD_ROOT) and a fake USB stick built from stick/. Exercises the combined
-# install and removal, repair, partial states, every injected fault and its
+# install and removal, repair, partial states, the update in place from older
+# versions (1.0.0 with Android Auto 1.6, early builds), every injected fault and its
 # rollback, the manifest check, the start dialogs, other regions (North
 # America) with unknown target binaries, byte-exact removal of files that
 # differ from the EU build, and the diagnosis privacy rules.
@@ -276,7 +277,7 @@ TT_LAUNCHER='$(echo fake touchtune launcher).up'
 # TouchTune that records its calls and environment.
 make_stick() {
     dest="$1"
-    v16="${2:-true}"
+    v16="${2:-false}"
     mkdir -p "$dest/lib" "$dest/payload" "$dest/aa-mod" "$dest/touchtune/lib" "$dest/touchtune/patches"
     cp "$SRC/run.sh" "$dest/run.sh"
     for f in mzd-safety.sh aa-touch.sh combined.sh; do cp "$SRC/lib/$f" "$dest/lib/$f"; done
@@ -288,9 +289,10 @@ make_stick() {
     : >"$dest/$LAUNCHER"
     printf '%s\n' "$LAUNCHER" >"$dest/LAUNCHER.NAME"
     printf '0.10.0\n' >"$dest/aa-mod/VERSION"
-    printf 'SHIM-BLM-%s\n' "$v16" >"$dest/aa-mod/libpatch-blmjciaapa.so"
-    printf 'SHIM-NAVI-%s\n' "$v16" >"$dest/aa-mod/libpatch-svcjcinavi.so"
-    printf 'SHIM-AAP-%s\n' "$v16" >"$dest/aa-mod/libpatch-aap_service.so"
+    # The shims do not depend on the profile (same oem-aa-mod release).
+    printf 'SHIM-BLM\n' >"$dest/aa-mod/libpatch-blmjciaapa.so"
+    printf 'SHIM-NAVI\n' >"$dest/aa-mod/libpatch-svcjcinavi.so"
+    printf 'SHIM-AAP\n' >"$dest/aa-mod/libpatch-aap_service.so"
     printf '# test libpatch.conf\ntouch = true\nhud = true\nuse_protocol_v1_6 = %s\n' "$v16" \
         >"$dest/aa-mod/libpatch.conf"
     cat >"$dest/aa-mod/aap_system_attributes.xml" <<'EOF'
@@ -355,7 +357,7 @@ TTEOF
 
 new_stick() {
     stick="$TESTROOT/stick-$1"
-    make_stick "$stick" "${2:-true}"
+    make_stick "$stick" "${2:-false}"
     printf '%s\n' "$stick"
 }
 
@@ -592,11 +594,11 @@ check_eq 'one .up in touchtune/' 1 "$(find "$STICK/touchtune" -maxdepth 1 -name 
 check_no_file 'no temporary launcher left' "$STICK/touchtune/.launcher.tmp"
 check_contains 'ACTION.txt asked for confirmation' "$TESTROOT/run.log" 'Selected: Install (ACTION.txt)'
 check_contains 'confirmation says when to pull the stick' "$TESTROOT/run.log" 'Pull it only when the screen tells you to.'
-check_eq 'sm.conf markers' 3 "$(count_markers "$CMU/jci/sm/sm.conf")"
-check_eq 'sm_WCP.conf markers' 3 "$(count_markers "$CMU/jci/sm/sm_WCP.conf")"
+check_eq 'sm.conf markers' 2 "$(count_markers "$CMU/jci/sm/sm.conf")"
+check_eq 'sm_WCP.conf markers' 2 "$(count_markers "$CMU/jci/sm/sm_WCP.conf")"
 check_wiring 'jciAAPA wired (sm.conf)' "$CMU" jci/sm/sm.conf jciAAPA libpatch-blmjciaapa.so
 check_wiring 'jcinavi wired (sm.conf)' "$CMU" jci/sm/sm.conf jcinavi libpatch-svcjcinavi.so
-check_wiring 'aap_service wired (sm.conf)' "$CMU" jci/sm/sm.conf aap_service libpatch-aap_service.so
+check_not_contains 'aap_service not preloaded (Android Auto 1.5)' "$CMU/jci/sm/sm.conf" 'libpatch-aap_service.so'
 check_wiring 'jciAAPA wired (sm_WCP.conf)' "$CMU" jci/sm/sm_WCP.conf jciAAPA libpatch-blmjciaapa.so
 check_xml_patched 'AA XML = factory file + touch (video untouched)' "$CMU/etc/aap_system_attributes.xml" \
     "$TESTROOT/cmu-template/etc/aap_system_attributes.xml" true
@@ -606,8 +608,12 @@ check_contains 'AA XML logged as patched' "$TESTROOT/run.log" "AA XML verified: 
 check_eq 'marker names the backup' "$(basename "$(ls -d "$CMU"/data_persist/mzd-aa-touch/backups/[0-9]* | head -n1)")" \
     "$(marker_backup "$CMU")"
 check_file 'shim blmjciaapa installed' "$CMU/data_persist/oem-aa-mod/libpatch-blmjciaapa.so"
-check_file 'shim aap_service installed' "$CMU/data_persist/oem-aa-mod/libpatch-aap_service.so"
-check_contains 'install marker with GAL 1.6' "$CMU/data_persist/oem-aa-mod/install-state" 'protocol_v16=1'
+check_no_file 'no aap_service shim (Android Auto 1.5)' "$CMU/data_persist/oem-aa-mod/libpatch-aap_service.so"
+check_contains 'install marker: GAL 1.6 off' "$CMU/data_persist/oem-aa-mod/install-state" 'protocol_v16=0'
+check_contains 'install marker: installer version' "$CMU/data_persist/oem-aa-mod/install-state" \
+    "installer=$(tr -d '\r\n' <"$REPO/VERSION")"
+check_not_contains 'fresh install: no previous installer' "$CMU/data_persist/oem-aa-mod/install-state" 'previous_installer='
+check_contains 'libpatch.conf on the car: 1.6 off' "$CMU/data_persist/oem-aa-mod/libpatch.conf" 'use_protocol_v1_6 = false'
 check_eq 'exactly one backup on the car' 1 "$(backup_count "$CMU")"
 check_xmls 'XML well-formed after install' "$CMU"
 check_no_stages 'no stage files left' "$CMU"
@@ -681,7 +687,7 @@ awk '!/libpatch-svcjcinavi.so/' "$CMUP/jci/sm/sm.conf" >"$CMUP/sm.tmp" && mv "$C
 run_stick "$CMUP" "$STICKP" install
 check_rc 'AA partial, TouchTune installed: exit code' "$?" 0
 check_contains 'repair uses the existing backup' "$TESTROOT/run.log" 'repair with the existing backup'
-check_eq 'repaired: 3 markers again' 3 "$(count_markers "$CMUP/jci/sm/sm.conf")"
+check_eq 'repaired: 2 markers again' 2 "$(count_markers "$CMUP/jci/sm/sm.conf")"
 check_eq 'TouchTune not called for an AA repair' 2 "$(tt_calls "$STICKP" touch-while-driving)"
 check_contains 'restart asked once at the end' "$TESTROOT/run.log" 'TEST: SafeReboot would be requested now'
 printf 'partial\n' >"$STICKP/touchtune/.tt-state"
@@ -694,14 +700,18 @@ check_eq 'TouchTune --restore for partial' 1 "$(tt_calls "$STICKP" --restore)"
 check_eq 'AA removed as well' 0 "$(count_markers "$CMUP/jci/sm/sm.conf")"
 
 # ---------------------------------------------------------------------------
-section 'GAL 1.6 off (use_protocol_v1_6 = false)'
-CMU3=$(new_cmu v16off)
-STICK3=$(new_stick v16off false)
+section 'Stick with GAL 1.6 on (use_protocol_v1_6 = true, profile B)'
+CMU3=$(new_cmu v16on)
+STICK3=$(new_stick v16on true)
 run_stick "$CMU3" "$STICK3" install
 check_rc 'install exit code' "$?" 0
-check_eq 'only 2 markers' 2 "$(count_markers "$CMU3/jci/sm/sm.conf")"
-check_no_file 'no aap_service shim' "$CMU3/data_persist/oem-aa-mod/libpatch-aap_service.so"
-check_contains 'marker: GAL 1.6 off' "$CMU3/data_persist/oem-aa-mod/install-state" 'protocol_v16=0'
+check_eq '3 markers' 3 "$(count_markers "$CMU3/jci/sm/sm.conf")"
+check_wiring 'aap_service wired (sm.conf)' "$CMU3" jci/sm/sm.conf aap_service libpatch-aap_service.so
+check_wiring 'aap_service wired (sm_WCP.conf)' "$CMU3" jci/sm/sm_WCP.conf aap_service libpatch-aap_service.so
+check_file 'aap_service shim installed' "$CMU3/data_persist/oem-aa-mod/libpatch-aap_service.so"
+check_contains 'marker: GAL 1.6 on' "$CMU3/data_persist/oem-aa-mod/install-state" 'protocol_v16=1'
+run_stick "$CMU3" "$STICK3" status
+check_contains 'GAL 1.6 stick: its own install is ours' "$TESTROOT/run.log" 'state=ours'
 
 # ---------------------------------------------------------------------------
 section 'AA XML: the car file is patched, not replaced'
@@ -728,7 +738,7 @@ cp "$STICKL/aa-mod/aap_system_attributes_UCP.xml" "$CMUL/etc/aap_system_attribut
 sed '/^backup=/d' "$CMUL/data_persist/oem-aa-mod/install-state" >"$CMUL/state.tmp" && \
     mv "$CMUL/state.tmp" "$CMUL/data_persist/oem-aa-mod/install-state"
 run_stick "$CMUL" "$STICKL" status
-check_contains 'earlier install (oem-aa-mod XML): still ours' "$TESTROOT/run.log" 'state=ours'
+check_contains 'earlier install (oem-aa-mod XML): outdated' "$TESTROOT/run.log" 'state=outdated'
 check_contains 'earlier install: XML variant named' "$TESTROOT/run.log" 'aap_system_attributes.xml variant=oem-aa-mod-file'
 run_stick "$CMUL" "$STICKL" uninstall
 check_rc 'earlier install: removal exit code' "$?" 0
@@ -760,20 +770,169 @@ check_eq 'no MEDIA_PLAY key: MEDIA_PAUSE is the last key' '<value>AAP_KEYCODE_ME
 run_stick "$CMUQ" "$STICKQ" uninstall
 check_stock_unchanged 'no MEDIA_PLAY key: originals byte-identical' "$CMUQ" "$BEFOREQ"
 
-CMUR=$(new_cmu xml-crlf)
-STICKR=$(new_stick xml-crlf)
-xml_edit "$CMUR" '{ print } index($0, "<value>AAP_KEYCODE_MEDIA_PLAY</value>") > 0 { sub(/MEDIA_PLAY/, "MEDIA_PAUSE"); print }'
-xml_edit "$CMUR" '{ printf "%s\r\n", $0 }'
-save_bases "$CMUR"
-BEFORER=$(stock_sums "$CMUR")
-run_stick "$CMUR" "$STICKR" install
-check_rc 'CRLF file with MEDIA_PAUSE: install exit code' "$?" 0
-check_xml_patched 'CRLF file with MEDIA_PAUSE: factory file + touch' "$CMUR/etc/aap_system_attributes_UCP.xml" \
-    "$CMUR.base-aap_system_attributes_UCP.xml" false
-if all_crlf "$CMUR/etc/aap_system_attributes.xml"; then ok 'CRLF file: added lines end in CR LF too'; \
-    else bad 'CRLF file: added lines end in CR LF too' 'mixed line endings'; fi
-run_stick "$CMUR" "$STICKR" uninstall
-check_stock_unchanged 'CRLF file: originals byte-identical' "$CMUR" "$BEFORER"
+# Git Bash's gawk reads files in text mode and drops the CR of CR LF (the
+# car's BusyBox awk keeps it), so the CRLF case only runs where awk keeps CR.
+printf 'a\r\n' >"$TESTROOT/crlf-probe"
+if [ "$(awk '{ print }' "$TESTROOT/crlf-probe" | tr -cd '\r' | wc -c | tr -d '[:space:]')" = 1 ]; then
+    CMUR=$(new_cmu xml-crlf)
+    STICKR=$(new_stick xml-crlf)
+    xml_edit "$CMUR" '{ print } index($0, "<value>AAP_KEYCODE_MEDIA_PLAY</value>") > 0 { sub(/MEDIA_PLAY/, "MEDIA_PAUSE"); print }'
+    xml_edit "$CMUR" '{ printf "%s\r\n", $0 }'
+    save_bases "$CMUR"
+    BEFORER=$(stock_sums "$CMUR")
+    run_stick "$CMUR" "$STICKR" install
+    check_rc 'CRLF file with MEDIA_PAUSE: install exit code' "$?" 0
+    check_xml_patched 'CRLF file with MEDIA_PAUSE: factory file + touch' "$CMUR/etc/aap_system_attributes_UCP.xml" \
+        "$CMUR.base-aap_system_attributes_UCP.xml" false
+    if all_crlf "$CMUR/etc/aap_system_attributes.xml"; then ok 'CRLF file: added lines end in CR LF too'; \
+        else bad 'CRLF file: added lines end in CR LF too' 'mixed line endings'; fi
+    run_stick "$CMUR" "$STICKR" uninstall
+    check_stock_unchanged 'CRLF file: originals byte-identical' "$CMUR" "$BEFORER"
+else
+    printf 'skip CRLF XML case (this awk drops CR when reading a file, e.g. Git Bash gawk)\n'
+fi
+
+# ---------------------------------------------------------------------------
+section 'Update in place from older versions'
+TPL_SUMS=$(stock_sums "$TESTROOT/cmu-template")
+NEWVER=$(tr -d '\r\n' <"$REPO/VERSION")
+# old_install <name>: a car with an installation by installer 1.0.0 (Android
+# Auto 1.6: aap_service shim and LD_PRELOAD line, use_protocol_v1_6 = true).
+old_install() {
+    oc=$(new_cmu "old-$1")
+    os="$TESTROOT/stick-old-$1"
+    make_stick "$os" true
+    run_stick "$oc" "$os" install
+    sed 's/^installer=.*/installer=1.0.0/' "$oc/data_persist/oem-aa-mod/install-state" >"$oc/state.tmp" && \
+        mv "$oc/state.tmp" "$oc/data_persist/oem-aa-mod/install-state"
+    printf '%s\n' "$oc"
+}
+marker_has() {
+    grep -q -x -F -- "$2" "$1/data_persist/oem-aa-mod/install-state" 2>/dev/null
+}
+
+CMUU=$(old_install a)
+check_eq '1.0.0 install: 3 markers' 3 "$(count_markers "$CMUU/jci/sm/sm.conf")"
+BKU=$(marker_backup "$CMUU")
+STICKU=$(new_stick update-a)
+printf 'installed\n' >"$STICKU/touchtune/.tt-state"
+run_stick "$CMUU" "$STICKU" status
+check_contains '1.0.0 install: state outdated' "$TESTROOT/run.log" 'state=outdated'
+check_contains '1.0.0 install: reason names 1.6' "$TESTROOT/run.log" 'older installation (installer 1.0.0: Android Auto 1.6)'
+AFTERU=$(stock_sums "$CMUU")
+run_stick "$CMUU" "$STICKU" - '' '2'
+check_rc 'update offered -> Cancel: exit code' "$?" 0
+check_contains 'start dialog: older version named' "$TESTROOT/run.log" 'Android Auto touch: older version installed'
+check_contains 'start dialog: update offered' "$TESTROOT/run.log" 'An update for Android Auto touch is available.'
+check_contains 'start dialog: Update / Remove both' "$TESTROOT/run.log" '[Update|Remove both|Cancel]'
+check_eq 'Cancel: nothing changed' "$AFTERU" "$(stock_sums "$CMUU")"
+run_stick "$CMUU" "$STICKU" - '' '0 0'
+check_rc 'update from the start dialog: exit code' "$?" 0
+check_contains 'update: own confirmation' "$TESTROOT/run.log" 'Selected: Update\n\nAndroid Auto touch is updated in place'
+check_contains 'update: working message' "$TESTROOT/run.log" 'POPUP: Updating...'
+check_contains 'update: AA working message' "$TESTROOT/run.log" 'POPUP: Updating Android Auto touch...'
+check_contains 'update: uses the existing backup' "$TESTROOT/run.log" "update in place with the existing backup: $CMUU/data_persist/mzd-aa-touch/backups/$BKU"
+check_eq 'update: 2 markers (sm.conf)' 2 "$(count_markers "$CMUU/jci/sm/sm.conf")"
+check_eq 'update: 2 markers (sm_WCP.conf)' 2 "$(count_markers "$CMUU/jci/sm/sm_WCP.conf")"
+check_not_contains 'update: aap_service line gone' "$CMUU/jci/sm/sm_WCP.conf" 'libpatch-aap_service.so'
+check_wiring 'update: jcinavi wired (sm_WCP.conf)' "$CMUU" jci/sm/sm_WCP.conf jcinavi libpatch-svcjcinavi.so
+check_no_file 'update: aap_service shim not live' "$CMUU/data_persist/oem-aa-mod/libpatch-aap_service.so"
+check_file 'update: aap_service shim kept aside' "$(ls "$CMUU"/data_persist/mzd-aa-touch/removed/libpatch-aap_service.so.* 2>/dev/null | head -n1)"
+check_hash 'update: libpatch.conf = the stick file' "$CMUU/data_persist/oem-aa-mod/libpatch.conf" \
+    "$(sha256sum "$STICKU/aa-mod/libpatch.conf" | cut -d' ' -f1)"
+if marker_has "$CMUU" protocol_v16=0 && marker_has "$CMUU" "installer=$NEWVER" && \
+   marker_has "$CMUU" previous_installer=1.0.0 && marker_has "$CMUU" "backup=$BKU"; then
+    ok 'update: marker (1.5, new installer, previous 1.0.0, same backup)'
+else
+    bad 'update: marker (1.5, new installer, previous 1.0.0, same backup)' "$(tr '\n' ' ' <"$CMUU/data_persist/oem-aa-mod/install-state")"
+fi
+check_eq 'update: still one backup' 1 "$(backup_count "$CMUU")"
+check_xml_patched 'update: AA XML = factory file + touch' "$CMUU/etc/aap_system_attributes.xml" \
+    "$TESTROOT/cmu-template/etc/aap_system_attributes.xml" true
+check_xml_patched 'update: UCP XML = factory file + touch' "$CMUU/etc/aap_system_attributes_UCP.xml" \
+    "$TESTROOT/cmu-template/etc/aap_system_attributes_UCP.xml" false
+check_xmls 'update: XML well-formed' "$CMUU"
+check_no_stages 'update: no stage files' "$CMUU"
+check_eq 'update: TouchTune (installed) not run' 0 "$(tt_calls "$STICKU" touch-while-driving)"
+check_contains 'update: done message' "$TESTROOT/run.log" 'Android Auto touch updated and verified'
+check_contains 'update: restart asked' "$TESTROOT/run.log" 'Android Auto touch is updated.'
+check_contains 'update: SafeReboot' "$TESTROOT/run.log" 'TEST: SafeReboot would be requested now'
+run_stick "$CMUU" "$STICKU" status
+check_contains 'after the update: ours' "$TESTROOT/run.log" 'state=ours'
+run_stick "$CMUU" "$STICKU" install
+check_contains 'after the update: nothing to do' "$TESTROOT/run.log" 'already installed'
+awk '!/libpatch-svcjcinavi.so/' "$CMUU/jci/sm/sm.conf" >"$CMUU/sm.tmp" && mv "$CMUU/sm.tmp" "$CMUU/jci/sm/sm.conf"
+run_stick "$CMUU" "$STICKU" install
+check_contains 'after the update: a repair is a repair' "$TESTROOT/run.log" 'repair with the existing backup'
+if marker_has "$CMUU" previous_installer=1.0.0; then ok 'repair keeps previous_installer'; \
+    else bad 'repair keeps previous_installer' "$(tr '\n' ' ' <"$CMUU/data_persist/oem-aa-mod/install-state")"; fi
+run_stick "$CMUU" "$STICKU" uninstall
+check_rc 'updated install: removal exit code' "$?" 0
+check_stock_unchanged 'updated install: originals byte-identical' "$CMUU" "$TPL_SUMS"
+check_no_file 'updated install: no shim folder' "$CMUU/data_persist/oem-aa-mod"
+
+# An early build: oem-aa-mod's XMLs copied, no backup= line in the marker.
+CMUE=$(old_install early)
+STICKE=$(new_stick update-early)
+cp "$STICKE/aa-mod/aap_system_attributes.xml" "$CMUE/etc/aap_system_attributes.xml"
+cp "$STICKE/aa-mod/aap_system_attributes_UCP.xml" "$CMUE/etc/aap_system_attributes_UCP.xml"
+sed -e '/^backup=/d' -e 's/^installer=.*/installer=0.9.0/' "$CMUE/data_persist/oem-aa-mod/install-state" >"$CMUE/state.tmp" && \
+    mv "$CMUE/state.tmp" "$CMUE/data_persist/oem-aa-mod/install-state"
+run_stick "$CMUE" "$STICKE" status
+check_contains 'early build: outdated' "$TESTROOT/run.log" 'state=outdated'
+check_contains 'early build: reason names the XML' "$TESTROOT/run.log" 'Android Auto 1.6, oem-aa-mod XML)'
+run_stick "$CMUE" "$STICKE" install
+check_rc 'early build: update via ACTION.txt: exit code' "$?" 0
+check_contains 'early build: ACTION.txt confirmation names the update' "$TESTROOT/run.log" 'Selected: Update (ACTION.txt)'
+check_xml_patched 'early build: AA XML = factory file + touch' "$CMUE/etc/aap_system_attributes.xml" \
+    "$TESTROOT/cmu-template/etc/aap_system_attributes.xml" true
+check_eq 'early build: 2 markers' 2 "$(count_markers "$CMUE/jci/sm/sm.conf")"
+if marker_has "$CMUE" previous_installer=0.9.0 && [ -n "$(marker_backup "$CMUE")" ]; then
+    ok 'early build: marker names the backup and the previous installer'
+else
+    bad 'early build: marker names the backup and the previous installer' "$(tr '\n' ' ' <"$CMUE/data_persist/oem-aa-mod/install-state")"
+fi
+check_eq 'early build: TouchTune (stock) installed in the same run' 1 "$(tt_calls "$STICKE" touch-while-driving)"
+run_stick "$CMUE" "$STICKE" uninstall
+check_rc 'early build: removal exit code' "$?" 0
+check_stock_unchanged 'early build: originals byte-identical' "$CMUE" "$TPL_SUMS"
+
+# A 1.0.0 installation removed by the new stick without updating it first.
+CMUO=$(old_install remove)
+STICKO=$(new_stick update-remove)
+run_stick "$CMUO" "$STICKO" uninstall
+check_rc '1.0.0 install removed by the new stick: exit code' "$?" 0
+check_stock_unchanged '1.0.0 install removed: originals byte-identical' "$CMUO" "$TPL_SUMS"
+check_no_file '1.0.0 install removed: no shim folder' "$CMUO/data_persist/oem-aa-mod"
+run_stick "$CMUO" "$STICKO" status
+check_contains '1.0.0 install removed: clean' "$TESTROOT/run.log" 'state=clean'
+
+# libpatch.conf changed in another way: not an older version, a repair.
+CMUM=$(old_install conf-modified)
+STICKM=$(new_stick update-conf-modified)
+printf 'hud = false\n' >>"$CMUM/data_persist/oem-aa-mod/libpatch.conf"
+run_stick "$CMUM" "$STICKM" status
+check_contains 'other libpatch.conf: partial, not outdated' "$TESTROOT/run.log" 'state=partial'
+run_stick "$CMUM" "$STICKM" install
+check_rc 'other libpatch.conf: repair exit code' "$?" 0
+check_hash 'other libpatch.conf: replaced by the stick file' "$CMUM/data_persist/oem-aa-mod/libpatch.conf" \
+    "$(sha256sum "$STICKM/aa-mod/libpatch.conf" | cut -d' ' -f1)"
+
+# A fault during the update rolls back to the car's original files.
+for flt in stage-write-fail publish-fail readback-fail; do
+    CMUF=$(old_install "fault-$flt")
+    STICKF=$(new_stick "update-fault-$flt")
+    run_stick "$CMUF" "$STICKF" install "$flt"
+    check_rc_nonzero "update $flt: aborts" "$?"
+    check_stock_unchanged "update $flt: original files restored" "$CMUF" "$TPL_SUMS"
+    check_no_file "update $flt: no shim folder" "$CMUF/data_persist/oem-aa-mod"
+    check_no_stages "update $flt: no stage files" "$CMUF"
+    check_eq "update $flt: TouchTune not started" 0 "$(tt_calls "$STICKF" .)"
+    run_stick "$CMUF" "$STICKF" install
+    check_rc "update $flt: a new run installs" "$?" 0
+    run_stick "$CMUF" "$STICKF" status
+    check_contains "update $flt: then ours" "$TESTROOT/run.log" 'state=ours'
+done
 
 # ---------------------------------------------------------------------------
 section 'CMU clock at 1970: which backup is used'
@@ -946,7 +1105,7 @@ printf '// another build\n' >"$CMU9/jci/gui/common/js/Common.js"
 run_stick "$CMU9" "$STICK9" install
 check_rc '"AA touch only" accepted: exit code' "$?" 0
 check_contains 'AA-only offered' "$TESTROOT/run.log" 'Install only Android Auto touch'
-check_eq 'AA installed alone' 3 "$(count_markers "$CMU9/jci/sm/sm.conf")"
+check_eq 'AA installed alone' 2 "$(count_markers "$CMU9/jci/sm/sm.conf")"
 check_eq 'TouchTune not started' 0 "$(tt_calls "$STICK9" .)"
 check_contains 'restart asked by this installer' "$TESTROOT/run.log" 'TEST: SafeReboot would be requested now'
 cp -a "$CMU9/jci/sm/sm.conf" "$CMU9/jci/sm/sm.conf.orig"
@@ -976,7 +1135,7 @@ run_stick "$CMUNA" "$STICKNA" install '' '' 'MZD_TEST_ENFORCE_BINARY_HASHES=1'
 check_rc 'untested build accepted: exit code' "$?" 0
 check_contains 'acceptance logged' "$TESTROOT/run.log" 'untested build accepted by the user'
 check_contains 'differing factory file logged' "$TESTROOT/run.log" 'sm.conf differs from the tested EU 74.00.324A file'
-check_eq 'NA: 3 markers' 3 "$(count_markers "$CMUNA/jci/sm/sm.conf")"
+check_eq 'NA: 2 markers' 2 "$(count_markers "$CMUNA/jci/sm/sm.conf")"
 check_contains 'NA: region service kept' "$CMUNA/jci/sm/sm.conf" 'name="sxm"'
 check_eq 'NA: TouchTune installed' 1 "$(tt_calls "$STICKNA" touch-while-driving)"
 run_stick "$CMUNA" "$STICKNA" uninstall '' '' 'MZD_TEST_ENFORCE_BINARY_HASHES=1'
@@ -1003,7 +1162,7 @@ run_stick "$CMU10" "$STICK10" install
 check_rc_nonzero 'fresh guard blocks' "$?"
 run_stick "$CMU10" "$STICK10" install '' '' 'MZD_GUARD_MAX_AGE_S=-1'
 check_rc 'stale guard removed' "$?" 0
-check_eq 'stale guard: installed' 3 "$(count_markers "$CMU10/jci/sm/sm.conf")"
+check_eq 'stale guard: installed' 2 "$(count_markers "$CMU10/jci/sm/sm.conf")"
 
 section 'TouchTune guard present'
 CMU11=$(new_cmu tt-guard)
@@ -1079,7 +1238,7 @@ STICKT=$(new_stick tt-fail)
 : >"$CMUT/tmp/tt-fail"
 run_stick "$CMUT" "$STICKT" install
 check_rc_nonzero 'TouchTune failure: exit code' "$?"
-check_eq 'AA stays installed (no cross-rollback)' 3 "$(count_markers "$CMUT/jci/sm/sm.conf")"
+check_eq 'AA stays installed (no cross-rollback)' 2 "$(count_markers "$CMUT/jci/sm/sm.conf")"
 check_contains 'failure reported' "$TESTROOT/run.log" 'TouchTune could not be confirmed'
 check_contains 'no restart after the failure' "$TESTROOT/run.log" 'No restart'
 check_not_contains 'no SafeReboot after the failure' "$TESTROOT/run.log" 'SafeReboot would be requested'
@@ -1097,7 +1256,7 @@ chmod 0444 "$BK12/metadata" "$BK12/metadata.sha256"
 run_stick "$CMU12" "$STICK12" uninstall
 check_rc_nonzero 'removal with a backup of another firmware refused' "$?"
 check_contains 'firmware mismatch reported' "$TESTROOT/run.log" 'different firmware'
-check_eq 'installation stays' 3 "$(count_markers "$CMU12/jci/sm/sm.conf")"
+check_eq 'installation stays' 2 "$(count_markers "$CMU12/jci/sm/sm.conf")"
 check_eq 'TouchTune not touched' 0 "$(tt_calls "$STICK12" --restore)"
 
 section 'Official firmware update: new backup and reinstall'
@@ -1116,7 +1275,7 @@ printf 'stock\n' >"$STICK13/touchtune/.tt-state"
 sleep 1
 run_stick "$CMU13" "$STICK13" install
 check_rc 'reinstall after the update: exit code' "$?" 0
-check_eq 'installed again' 3 "$(count_markers "$CMU13/jci/sm/sm.conf")"
+check_eq 'installed again' 2 "$(count_markers "$CMU13/jci/sm/sm.conf")"
 check_eq 'two backups' 2 "$(backup_count "$CMU13")"
 check_contains 'new backup logged' "$TESTROOT/run.log" 'new backup'
 
@@ -1174,7 +1333,7 @@ check_eq 'Back five times: TouchTune not started' 0 "$(tt_calls "$STICKD" .)"
 check_contains 'Back five times ends as cancelled' "$TESTROOT/run.log" 'POPUP: Cancelled. Nothing was changed.'
 run_stick "$CMUD" "$STICKD" - '' '0 0'
 check_rc 'not installed -> Install -> Start: exit code' "$?" 0
-check_eq 'Install from the dialog: AA' 3 "$(count_markers "$CMUD/jci/sm/sm.conf")"
+check_eq 'Install from the dialog: AA' 2 "$(count_markers "$CMUD/jci/sm/sm.conf")"
 check_eq 'Install from the dialog: TouchTune' 1 "$(tt_calls "$STICKD" touch-while-driving)"
 check_contains 'Install asks first' "$TESTROOT/run.log" 'Selected: Install\n\nYour original files are backed up on this car'
 check_contains 'Install confirmation says when to pull the stick' "$TESTROOT/run.log" 'Pull it only when the screen tells you to.'
@@ -1182,7 +1341,7 @@ check_not_contains 'start dialog confirmation, not the ACTION.txt one' "$TESTROO
 run_stick "$CMUD" "$STICKD" - '' '0 1 2'
 check_rc 'installed -> Remove both -> Back -> Cancel: exit code' "$?" 0
 check_contains 'installed state offers Remove both' "$TESTROOT/run.log" 'Remove both'
-check_eq 'cancelled removal keeps AA' 3 "$(count_markers "$CMUD/jci/sm/sm.conf")"
+check_eq 'cancelled removal keeps AA' 2 "$(count_markers "$CMUD/jci/sm/sm.conf")"
 check_eq 'cancelled removal keeps TouchTune' 0 "$(tt_calls "$STICKD" --restore)"
 run_stick "$CMUD" "$STICKD" - '' '0 0'
 check_rc 'installed -> Remove both -> Start: exit code' "$?" 0
@@ -1270,6 +1429,13 @@ if [ -n "$PY" ] && [ -f "$DL/oem-aa-mod-0.10.0.zip" ] && [ -f "$DL/TouchTune-1.2
         check_contains 'builder: README links oem-aa-mod' "$BS/README.txt" 'https://github.com/VitaliyKurokhtin/oem-aa-mod'
         check_contains 'builder: README links TouchTune' "$BS/README.txt" 'https://github.com/Miatafy/TouchTune'
         check_file 'builder: oem-aa-mod LICENSE' "$BS/aa-mod/LICENSE"
+        check_hash 'builder: libpatch.conf with 1.6 off' "$BS/aa-mod/libpatch.conf" \
+            b874a9cf85916799032ae5b874d88a2f714d733a31a3e6cdeba785c6e25d827a
+        check_eq 'builder: exactly the one line changed' 'use_protocol_v1_6 = false' \
+            "$(grep '^[ \t]*use_protocol_v1_6[ \t]*=' "$BS/aa-mod/libpatch.conf")"
+        check_contains 'builder: SHA256SUMS lists the shipped file' "$BS/aa-mod/SHA256SUMS" \
+            'b874a9cf85916799032ae5b874d88a2f714d733a31a3e6cdeba785c6e25d827a  libpatch.conf'
+        check_contains 'builder: SOURCE.txt names the change' "$BS/aa-mod/SOURCE.txt" 'use_protocol_v1_6 = false'
         check_file 'builder: release ZIP' "$TESTROOT/dist/mzd-touch-installer-$(tr -d '\r\n' <"$REPO/VERSION").zip"
 
         # Updating a stick that was used in a car keeps logs, diagnoses and
@@ -1306,7 +1472,7 @@ if [ -n "$PY" ] && [ -f "$DL/oem-aa-mod-0.10.0.zip" ] && [ -f "$DL/TouchTune-1.2
         rcb=$?
         check_contains 'real stick: TouchTune launcher written' "$TESTROOT/run.log" 'TouchTune launcher written to the stick'
         check_rc 'real stick: install exit code' "$rcb" 0
-        check_eq 'real stick: 3 markers (GAL 1.6 release profile)' 3 "$(count_markers "$CMUB/jci/sm/sm.conf")"
+        check_eq 'real stick: 2 markers (Android Auto 1.5)' 2 "$(count_markers "$CMUB/jci/sm/sm.conf")"
         check_hash 'real stick: real shim installed' "$CMUB/data_persist/oem-aa-mod/libpatch-blmjciaapa.so" \
             a6b87f72ae31429cebe14eea5c6d3a4a2749d4ea643a8c73303b3437533ad5b5
         check_xml_patched 'real stick: AA XML = factory file + touch' "$CMUB/etc/aap_system_attributes.xml" \
@@ -1349,6 +1515,60 @@ if [ -n "$PY" ] && [ -f "$DL/oem-aa-mod-0.10.0.zip" ] && [ -f "$DL/TouchTune-1.2
             printf 'note: real TouchTune run needs MZD_TEST_REAL_ROOTFS with the stock Common.js\n'
         fi
         [ "$rcb" = 0 ] || sed -n '1,60p' "$TESTROOT/run.log"
+
+        # The real 1.0.0 release stick (rebuilt from tag v1.0.0), then this
+        # stick: the 1.0.0 installation is updated in place.
+        if command -v git >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && \
+           git -C "$REPO" rev-parse -q --verify 'refs/tags/v1.0.0^{commit}' >/dev/null 2>&1; then
+            OLDREPO="$TESTROOT/repo-v1.0.0"
+            mkdir -p "$OLDREPO"
+            if git -C "$REPO" archive v1.0.0 | tar -x -C "$OLDREPO" && \
+               "$PY" -I "$OLDREPO/tools/build_stick.py" build --out "$TESTROOT/dist-1.0.0" \
+                   --aa-mod-zip "$DL/oem-aa-mod-0.10.0.zip" --touchtune-zip "$DL/TouchTune-1.2.1.zip" \
+                   --aa-mod-license "$DL/oem-aa-mod-0.10.0-LICENSE" --aa-mod-notice "$DL/oem-aa-mod-0.10.0-NOTICE.md" \
+                   >"$TESTROOT/builder-1.0.0.log" 2>&1; then
+                ok 'builder 1.0.0: release stick rebuilt from the tag'
+                CMUV=$(new_cmu real-update)
+                BEFOREV=$(stock_sums "$CMUV")
+                cp -a "$TESTROOT/dist-1.0.0/stick" "$TESTROOT/stick-1.0.0"
+                run_stick "$CMUV" "$TESTROOT/stick-1.0.0" install
+                check_rc 'real 1.0.0 stick: install exit code' "$?" 0
+                check_eq 'real 1.0.0 stick: 3 markers (Android Auto 1.6)' 3 "$(count_markers "$CMUV/jci/sm/sm.conf")"
+                check_hash 'real 1.0.0 stick: release libpatch.conf' "$CMUV/data_persist/oem-aa-mod/libpatch.conf" \
+                    6b32397273f6e445fd8470643cb9b99d4f792f755b89780b3f73af2f1d835582
+                BKV=$(marker_backup "$CMUV")
+                cp -a "$BS" "$TESTROOT/stick-builder-update"
+                SBU="$TESTROOT/stick-builder-update"
+                run_stick "$CMUV" "$SBU" status
+                check_contains 'real update: 1.0.0 recognized as outdated' "$TESTROOT/run.log" 'older installation (installer 1.0.0: Android Auto 1.6)'
+                run_stick "$CMUV" "$SBU" install
+                check_rc 'real update 1.0.0 -> new: exit code' "$?" 0
+                check_contains 'real update: in place' "$TESTROOT/run.log" 'update in place with the existing backup'
+                check_eq 'real update: 2 markers' 2 "$(count_markers "$CMUV/jci/sm/sm.conf")"
+                check_eq 'real update: 2 markers (sm_WCP.conf)' 2 "$(count_markers "$CMUV/jci/sm/sm_WCP.conf")"
+                check_no_file 'real update: aap_service shim not live' "$CMUV/data_persist/oem-aa-mod/libpatch-aap_service.so"
+                check_hash 'real update: libpatch.conf with 1.6 off' "$CMUV/data_persist/oem-aa-mod/libpatch.conf" \
+                    b874a9cf85916799032ae5b874d88a2f714d733a31a3e6cdeba785c6e25d827a
+                if marker_has "$CMUV" previous_installer=1.0.0 && marker_has "$CMUV" "backup=$BKV" && \
+                   marker_has "$CMUV" protocol_v16=0; then
+                    ok 'real update: marker (previous 1.0.0, same backup, 1.6 off)'
+                else
+                    bad 'real update: marker (previous 1.0.0, same backup, 1.6 off)' "$(tr '\n' ' ' <"$CMUV/data_persist/oem-aa-mod/install-state")"
+                fi
+                check_eq 'real update: one backup' 1 "$(backup_count "$CMUV")"
+                check_xml_patched 'real update: AA XML = factory file + touch' "$CMUV/etc/aap_system_attributes.xml" \
+                    "$TESTROOT/cmu-template/etc/aap_system_attributes.xml" true
+                run_stick "$CMUV" "$SBU" status
+                check_contains 'real update: then ours' "$TESTROOT/run.log" 'state=ours'
+                run_stick "$CMUV" "$SBU" uninstall
+                check_rc 'real update: removal exit code' "$?" 0
+                check_stock_unchanged 'real update: AA originals byte-identical' "$CMUV" "$BEFOREV"
+            else
+                bad 'builder 1.0.0: release stick rebuilt from the tag' "$(tail -n 3 "$TESTROOT/builder-1.0.0.log" 2>/dev/null)"
+            fi
+        else
+            printf 'skip real 1.0.0 -> new update (git, tar or tag v1.0.0 missing)\n'
+        fi
     else
         bad 'builder runs' 'see builder.log'
         sed -n '1,20p' "$TESTROOT/builder.log"

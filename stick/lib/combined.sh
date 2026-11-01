@@ -117,6 +117,7 @@ combined_aa_label() {
     case "$1" in
         clean) printf 'not installed\n' ;;
         ours) printf 'installed\n' ;;
+        outdated) printf 'older version installed\n' ;;
         partial) printf 'partially installed\n' ;;
         foreign) printf 'modified by another installer\n' ;;
         *) printf 'unknown state\n' ;;
@@ -181,7 +182,7 @@ combined_install() {
     tt_before=$(combined_tt_state)
     mzd_log "state before the combined install: AA=$aa_before${AA_STATE_REASON:+ ($AA_STATE_REASON)} TouchTune=$tt_before"
     case "$aa_before" in
-        clean|partial) aa_todo=1 ;;
+        clean|partial|outdated) aa_todo=1 ;;
         ours) aa_todo=0 ;;
         *) aa_todo=skip ;;
     esac
@@ -256,7 +257,7 @@ combined_install() {
     fi
 
     # Only Android Auto touch changed in this run.
-    if ! mzd_ask_reboot "Android Auto touch is installed.\nTouchTune: $(combined_tt_label "$(combined_tt_state)")."; then
+    if ! mzd_ask_reboot "Android Auto touch is $([ "$aa_before" = outdated ] && echo updated || echo installed).\nTouchTune: $(combined_tt_label "$(combined_tt_state)")."; then
         mzd_popup "The restart could not be requested.\n\nPlease restart Mazda Connect manually."
     fi
     return 0
@@ -292,7 +293,7 @@ combined_revert() {
 
     case "$aa_before" in
         clean) ;;
-        ours|partial)
+        ours|partial|outdated)
             MZD_SKIP_REBOOT=1
             MZD_CONFIRMED=1
             export MZD_SKIP_REBOOT MZD_CONFIRMED

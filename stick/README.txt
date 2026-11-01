@@ -9,9 +9,12 @@ This stick installs or removes, in one run:
                                https://github.com/VitaliyKurokhtin/oem-aa-mod
   2. Touch while driving     - TouchTune 1.2.1 by Miatafy
                                https://github.com/Miatafy/TouchTune
-Both are included unmodified (folders aa-mod/ and touchtune/). The Android
-Auto XML of your car is not replaced: only oem-aa-mod's touch, media-pause
-and navigation entries are added, the video settings stay as shipped.
+Both are included unmodified (folders aa-mod/ and touchtune/), except one
+line of oem-aa-mod's libpatch.conf: use_protocol_v1_6 = false, so the car
+keeps offering Android Auto 1.5 as from the factory and wireless Android
+Auto adapters connect as before (aa-mod/SOURCE.txt). The Android Auto XML
+of your car is not replaced: only oem-aa-mod's touch, media-pause and
+navigation entries are added, the video settings stay as shipped.
 
 USE
   1. Stick: FAT32 (up to 32 GB), nothing else on it. Copy ALL files of the
@@ -23,6 +26,8 @@ USE
        nothing installed     -> Install / Diagnosis / Cancel
        both installed        -> Remove both / Diagnosis / Cancel
        one of them installed -> Install / Remove / Cancel
+       older version (1.0.0) -> Update / Remove (both) / Cancel
+     Update works in place with the backup already on the car.
   4. Every button first opens a short confirmation that says what will
      happen: tap Start (Back returns to the start dialog).
   5. Then do not pull the stick and do not press anything until the

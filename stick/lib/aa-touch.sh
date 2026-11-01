@@ -2,9 +2,11 @@
 # aa-touch.sh -- Android Auto touch for Mazda Connect 74.00.324/324A.
 #
 # Installs the community "oem-aa-mod" by VitaliyKurokhtin
-# (https://github.com/VitaliyKurokhtin/oem-aa-mod, AGPL-3.0): its shims and
-# libpatch.conf unmodified, and its touch-screen entries added to the car's own
-# AA XML (see aa_xml_patch), with these safety properties:
+# (https://github.com/VitaliyKurokhtin/oem-aa-mod, AGPL-3.0): its shims
+# unmodified, its libpatch.conf with one line changed (use_protocol_v1_6 =
+# false: the car keeps offering Android Auto 1.5, so wireless adapters still
+# get their Bluetooth pairing request), and its touch-screen entries added to
+# the car's own AA XML (see aa_xml_patch), with these safety properties:
 #
 #   - the complete oem-aa-mod payload on the stick is hash-verified first
 #   - a verified, write-once backup of the four files it changes is taken
@@ -15,6 +17,9 @@
 #   - every published file is read back and verified
 #   - any failure rolls back to the recorded state
 #   - removal restores exactly the recorded files, byte for byte
+#   - an older installation of this installer (1.0.0 with Android Auto 1.6,
+#     or an early build that copied the oem-aa-mod XMLs) is recognized and
+#     updated in place from the backup it took (state "outdated")
 #
 # What it changes:
 #   /data_persist/oem-aa-mod/libpatch-*.so + libpatch.conf  (the shims)
@@ -72,8 +77,10 @@ aa_mod_version() {
 }
 
 # Read use_protocol_v1_6 from the libpatch.conf that will be deployed.
-# Missing file or key means the upstream default "false"; the release ships
-# "true" (Android Auto 1.6 navigation for the head-up display).
+# Missing file or key means the upstream default "false". The oem-aa-mod
+# release ships "true"; this installer ships "false" (installer 1.0.0 shipped
+# "true": with 1.6 a wireless phone skips the Bluetooth pairing request that
+# Mazda Connect waits for, so adapters only worked through a workaround).
 aa_read_protocol_v16() {
     local val
     if ! val=$(mzd_conf_value "$MZD_AA_SRC/libpatch.conf" use_protocol_v1_6); then
@@ -86,8 +93,9 @@ aa_read_protocol_v16() {
 }
 
 # Profile from the hash-verified libpatch.conf:
-#   B = release default (all three shims/services, GAL 1.6)
-#   A = without GAL 1.6 (blmjciaapa + svcjcinavi, no aap_service)
+#   A = this installer: blmjciaapa + svcjcinavi, no aap_service (GAL 1.5)
+#   B = with GAL 1.6: all three shims/services (oem-aa-mod release default,
+#       installer 1.0.0)
 aa_read_profile() {
     AA_PROFILE=""
     if ! mzd_real_file "$MZD_AA_SRC/libpatch.conf"; then
@@ -183,7 +191,7 @@ aa_verify_payload() {
 }
 
 # ---------------------------------------------------------------------------
-# State recognition: clean | ours | partial | foreign | broken
+# State recognition: clean | ours | outdated | partial | foreign | broken
 # ---------------------------------------------------------------------------
 
 aa_expected_line() {
@@ -271,11 +279,22 @@ aa_live_files_look_factory() {
     return 0
 }
 
+aa_service_of() {
+    case "$1" in
+        libpatch-blmjciaapa.so) printf 'jciAAPA\n' ;;
+        libpatch-svcjcinavi.so) printf 'jcinavi\n' ;;
+        libpatch-aap_service.so) printf 'aap_service\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+# aa_conf_matches <conf> [libs]: exactly the LD_PRELOAD lines of <libs>
+# (default: the current profile), each directly inside its <service> block.
 aa_conf_matches() {
-    local conf="$1" lib service expected count total svc_line our_line
+    local conf="$1" libs="${2:-$AA_LIBS}" lib service expected count total svc_line our_line
     mzd_real_file "$conf" || return 1
     total=0
-    for lib in $AA_LIBS; do
+    for lib in $libs; do
         expected=$(aa_expected_line "$lib")
         count=$(mzd_count_line "$conf" "$expected")
         count=$(printf '%s' "$count" | tr -d '[:space:]')
@@ -287,13 +306,8 @@ aa_conf_matches() {
     [ "${count:-0}" = "$total" ] || { AA_STATE_REASON="$conf: unexpected oem-aa-mod lines (${count:-0} instead of $total)"; return 1; }
     # Wiring check: each shim's LD_PRELOAD line must sit directly inside the
     # matching <service> block (our writer inserts it as the next line).
-    for service in $AA_SERVICES; do
-        case "$service" in
-            jciAAPA) lib=libpatch-blmjciaapa.so ;;
-            jcinavi) lib=libpatch-svcjcinavi.so ;;
-            aap_service) lib=libpatch-aap_service.so ;;
-            *) return 1 ;;
-        esac
+    for lib in $libs; do
+        service=$(aa_service_of "$lib") || return 1
         expected=$(aa_expected_line "$lib")
         svc_line=$(grep -n "<service [^>]*name=\"$service\"" "$conf" 2>/dev/null | head -n1 | cut -d: -f1)
         our_line=$(awk -v line="$expected" '$0 == line { print NR; exit }' "$conf" 2>/dev/null)
@@ -500,10 +514,12 @@ aa_stage_xml() {
     return 0
 }
 
-# Installed XMLs: the car's XML plus the touch entries (derived from the
-# backup), or the oem-aa-mod file itself as written by earlier installers.
+# aa_xml_matches [legacy]: the installed XMLs are the car's XML plus the touch
+# entries (derived from the backup). With "legacy" the oem-aa-mod file itself,
+# as written by early builds of this installer, is accepted too (it changes
+# how the phone scales Android Auto, so it is only a state to update from).
 aa_xml_matches() {
-    local live legacy actual expected name
+    local accept_legacy="${1:-}" live legacy actual expected name
     for live in "$MZD_AA_XML" "$MZD_AA_XML_UCP"; do
         name=$(basename "$live")
         case "$name" in
@@ -512,7 +528,11 @@ aa_xml_matches() {
         esac
         mzd_real_file "$live" || { AA_STATE_REASON="$name missing"; return 1; }
         actual=$(mzd_sha256_file "$live") || { AA_STATE_REASON="$name cannot be read"; return 1; }
-        [ "$actual" = "$legacy" ] && continue
+        if [ "$actual" = "$legacy" ]; then
+            [ "$accept_legacy" = legacy ] && continue
+            AA_STATE_REASON="$name is the oem-aa-mod file (early installer build)"
+            return 1
+        fi
         expected=$(aa_xml_expected_sha "$live") || {
             AA_STATE_REASON="$name: the expected file cannot be derived from the backup"
             return 1
@@ -537,6 +557,75 @@ aa_xml_variant() {
         printf 'factory+touch\n'; return 0
     fi
     if grep -q '<touch_screen>' "$live" 2>/dev/null; then printf 'other-with-touch\n'; else printf 'without-touch\n'; fi
+}
+
+# sha256 of a libpatch.conf with the value of use_protocol_v1_6 blanked out,
+# so two files can be compared apart from that one setting.
+aa_conf_v16_neutral_sha() {
+    local f="$1" out sha
+    mzd_real_file "$f" || return 1
+    out="$MZD_ROOT/tmp/mzd-conf-v16.$$"
+    awk '
+        /^[ \t]*use_protocol_v1_6[ \t]*=/ { print "use_protocol_v1_6 = *"; next }
+        { print }
+    ' "$f" >"$out" || { rm -f "$out"; return 1; }
+    sha=$(mzd_sha256_file "$out") || { rm -f "$out"; return 1; }
+    rm -f "$out"
+    printf '%s\n' "$sha"
+}
+
+# aa_marker_value <key>: a value from the installation marker (only safe
+# characters).
+aa_marker_value() {
+    mzd_real_file "$MZD_AA_STATE_MARKER" || return 1
+    sed -n "s/^$1=//p" "$MZD_AA_STATE_MARKER" 2>/dev/null | head -n1 | tr -cd '0-9A-Za-z.+_-' | cut -c1-40
+}
+
+# An older installation of this installer that is complete in itself:
+#   - installer 1.0.0: Android Auto 1.6 (aap_service shim + its LD_PRELOAD
+#     line, libpatch.conf with use_protocol_v1_6 = true)
+#   - early builds: the oem-aa-mod XMLs copied instead of the car's own XMLs
+#     with the touch entries
+# Same oem-aa-mod version and shims as on the stick, libpatch.conf equal to the
+# stick's apart from use_protocol_v1_6, our marker, our LD_PRELOAD lines only.
+# Requires aa_verify_payload and a found backup. Sets AA_STATE_REASON.
+aa_outdated_install() {
+    local libs lib expected what="" from
+    libs="libpatch-blmjciaapa.so libpatch-svcjcinavi.so"
+    if [ "$(mzd_count_line "$MZD_SM_CONF" "$(aa_expected_line libpatch-aap_service.so)" | tr -d '[:space:]')" != 0 ]; then
+        libs="$libs libpatch-aap_service.so"
+        [ "$AA_V16" = 1 ] || what="Android Auto 1.6"
+    elif [ "$AA_V16" = 1 ]; then
+        return 1
+    fi
+    aa_conf_matches "$MZD_SM_CONF" "$libs" || return 1
+    aa_conf_matches "$MZD_SM_WCP" "$libs" || return 1
+    for lib in $libs; do
+        case "$lib" in
+            libpatch-blmjciaapa.so) expected="$AA_HASH_BLM" ;;
+            libpatch-svcjcinavi.so) expected="$AA_HASH_NAVI" ;;
+            libpatch-aap_service.so) expected="$AA_HASH_AAP" ;;
+        esac
+        [ -n "$expected" ] || return 1
+        mzd_real_file "$MZD_AA_DIR/$lib" || return 1
+        [ "$(mzd_sha256_file "$MZD_AA_DIR/$lib")" = "$expected" ] || return 1
+    done
+    mzd_real_file "$MZD_AA_DIR/libpatch.conf" || return 1
+    [ "$(aa_conf_v16_neutral_sha "$MZD_AA_DIR/libpatch.conf")" = "$(aa_conf_v16_neutral_sha "$MZD_AA_SRC/libpatch.conf")" ] || return 1
+    if [ "$(mzd_sha256_file "$MZD_AA_DIR/libpatch.conf")" != "$AA_HASH_CONF" ]; then
+        [ -n "$what" ] || what="libpatch.conf"
+    fi
+    mzd_real_file "$MZD_AA_STATE_MARKER" || return 1
+    grep -q '^installer=' "$MZD_AA_STATE_MARKER" || return 1
+    grep -q "^mod_version=$AA_MOD_VERSION$" "$MZD_AA_STATE_MARKER" || return 1
+    aa_xml_matches legacy || return 1
+    if ! aa_xml_matches; then
+        what="${what:+$what, }oem-aa-mod XML"
+    fi
+    [ -n "$what" ] || return 1
+    from=$(aa_marker_value installer)
+    AA_STATE_REASON="older installation (installer ${from:-unknown}: $what)"
+    return 0
 }
 
 # Find this installer's backup: the one named in the installation marker,
@@ -607,7 +696,7 @@ aa_confirm_untested_build() {
 
 # Determine AA_STATE and AA_STATE_REASON. Requires aa_verify_payload first.
 aa_state() {
-    local conf any_marker=0 foreign_marker=0 touch=0 shims=0 backup_ok=0 count
+    local conf any_marker=0 foreign_marker=0 touch=0 shims=0 backup_ok=0 count reason
     AA_STATE=""
     AA_STATE_REASON=""
     if ! mzd_real_file "$MZD_SM_CONF" || ! mzd_real_file "$MZD_SM_WCP"; then
@@ -669,6 +758,13 @@ aa_state() {
         return 0
     fi
     [ -n "$AA_STATE_REASON" ] || AA_STATE_REASON="partial installation (lines or files differ)"
+    reason="$AA_STATE_REASON"
+    if aa_outdated_install; then
+        AA_STATE=outdated
+        printf 'outdated|%s\n' "$AA_STATE_REASON"
+        return 0
+    fi
+    AA_STATE_REASON="$reason"
     AA_STATE=partial
     printf 'partial|%s\n' "$AA_STATE_REASON"
     return 0
@@ -763,7 +859,13 @@ aa_stage_conf() {
 }
 
 aa_install_shims() {
-    local lib src expected in_use used
+    local lib src expected in_use used previous
+    # Keep track of an update in place: the installer version found on the car
+    # (or the one an earlier update already recorded).
+    previous=$(aa_marker_value installer) || previous=""
+    if [ -z "$previous" ] || [ "$previous" = "$MZD_INSTALLER_VERSION" ]; then
+        previous=$(aa_marker_value previous_installer) || previous=""
+    fi
     if [ ! -d "$MZD_AA_DIR" ]; then
         mkdir -p "$MZD_AA_DIR" || { mzd_error "cannot create the target folder: $MZD_AA_DIR"; return 1; }
     fi
@@ -803,6 +905,8 @@ aa_install_shims() {
         printf 'backup=%s\n' "$(basename "$MZD_BACKUP_DIR")"
         printf 'source_sha256_blm=%s\n' "$AA_HASH_BLM"
         printf 'source_sha256_navi=%s\n' "$AA_HASH_NAVI"
+        [ -n "$previous" ] && printf 'previous_installer=%s\n' "$previous"
+        :
     } >"$MZD_AA_DIR/install-state" || { mzd_error "cannot write the installation marker"; return 1; }
     mzd_fsync_file "$MZD_AA_DIR/install-state" || return 1
     mzd_fsync_dir "$MZD_AA_DIR" || return 1
@@ -949,7 +1053,7 @@ aa_abort() {
 
 # MZD_CONFIRMED=1: the user already confirmed in the start dialog.
 aa_install() {
-    local state conf sha lib name new_backup=0
+    local state before conf sha lib name new_backup=0 done_text
     mzd_log "=== Android Auto touch: install ==="
     if ! mzd_require_firmware; then
         mzd_popup "Unsupported firmware.\n\nThis installer supports Mazda Connect 74.00.324 and 74.00.324A.\nNothing was changed."
@@ -975,7 +1079,7 @@ aa_install() {
             mzd_popup "The Mazda Connect configuration is not in a state this installer can handle (${AA_STATE_REASON}).\n\nNothing was changed.\nPlease run the diagnosis."
             return 1
             ;;
-        ours|partial)
+        ours|partial|outdated)
             if ! aa_backup_find; then
                 mzd_popup "No valid backup of this installer was found.\n\nRepair is not possible.\nNothing was changed."
                 return 1
@@ -993,10 +1097,17 @@ aa_install() {
                 fi
             fi
             if [ "$new_backup" = 0 ] && [ "${MZD_CONFIRMED:-0}" != 1 ]; then
-                mzd_ask2 "Android Auto touch is $([ "$state" = ours ] && echo already || echo partially) installed.\n\nRepair it now?" "Repair" "Cancel" || {
-                    mzd_log "installation cancelled"
-                    return 1
-                }
+                if [ "$state" = outdated ]; then
+                    mzd_ask2 "An older version of Android Auto touch\nis installed.\n\nUpdate it now?\nThe backup taken on this car is used." "Update" "Cancel" || {
+                        mzd_log "update cancelled"
+                        return 1
+                    }
+                else
+                    mzd_ask2 "Android Auto touch is $([ "$state" = ours ] && echo already || echo partially) installed.\n\nRepair it now?" "Repair" "Cancel" || {
+                        mzd_log "installation cancelled"
+                        return 1
+                    }
+                fi
             fi
             ;;
         clean)
@@ -1014,13 +1125,19 @@ aa_install() {
         mzd_popup "Installation cancelled.\n\nNothing was changed."
         return 1
     }
-    mzd_popup_busy "Installing Android Auto touch...\n\nDo not pull the stick and\ndo not press anything."
+    if [ "$state" = outdated ]; then
+        mzd_popup_busy "Updating Android Auto touch...\n\nDo not pull the stick and\ndo not press anything."
+    else
+        mzd_popup_busy "Installing Android Auto touch...\n\nDo not pull the stick and\ndo not press anything."
+    fi
 
     if [ "$new_backup" = 1 ]; then
         if ! aa_create_new_backup; then
             mzd_popup "The backup could not be created and verified.\n\nNothing was changed."
             return 1
         fi
+    elif [ "$state" = outdated ]; then
+        mzd_log "update in place with the existing backup: $MZD_BACKUP_DIR ($AA_STATE_REASON)"
     elif [ -n "$MZD_BACKUP_DIR" ]; then
         mzd_log "repair with the existing backup: $MZD_BACKUP_DIR"
     fi
@@ -1064,6 +1181,7 @@ aa_install() {
 
     # Final readback of the complete target state before the transaction is
     # released (this also covers a stale/partial config left behind).
+    before=$state
     aa_state_parse
     state=$AA_STATE
     if [ "$state" != ours ]; then
@@ -1079,8 +1197,14 @@ aa_install() {
         return 1
     fi
     mzd_backup_copy_to_stick
-    mzd_popup "Android Auto touch (oem-aa-mod $AA_MOD_VERSION) installed and verified.\n\nTouch in Android Auto is active after the restart.$(aa_not_yet_hint)"
-    if ! mzd_ask_reboot "Android Auto touch is installed."; then
+    if [ "$before" = outdated ]; then
+        mzd_popup "Android Auto touch updated and verified\n(installer $MZD_INSTALLER_VERSION, oem-aa-mod $AA_MOD_VERSION).\n\nThe new version is active after the restart.$(aa_not_yet_hint)"
+        done_text="Android Auto touch is updated."
+    else
+        mzd_popup "Android Auto touch (oem-aa-mod $AA_MOD_VERSION) installed and verified.\n\nTouch in Android Auto is active after the restart.$(aa_not_yet_hint)"
+        done_text="Android Auto touch is installed."
+    fi
+    if ! mzd_ask_reboot "$done_text"; then
         mzd_popup "The restart (Mazda SafeReboot) could not be requested.\n\nPlease restart Mazda Connect manually.\nThe installation is complete."
     fi
     return 0

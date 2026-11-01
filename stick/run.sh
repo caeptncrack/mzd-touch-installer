@@ -214,6 +214,9 @@ confirm_action() {
         install)
             mzd_ask2 "Selected: $2\n\nYour original files are backed up on this car,\nthen what is missing is installed and checked.\nMazda Connect restarts at the end.\n\nDo not pull the stick while it works.\nPull it only when the screen tells you to." "Start" "$3"
             ;;
+        update)
+            mzd_ask2 "Selected: $2\n\nAndroid Auto touch is updated in place with\nthe backup already taken on this car;\nanything missing is installed and checked.\nMazda Connect restarts at the end.\n\nDo not pull the stick while it works.\nPull it only when the screen tells you to." "Start" "$3"
+            ;;
         uninstall)
             mzd_ask2 "Selected: $2\n\nYour original files are restored from the\nbackups on this car and checked.\nMazda Connect restarts at the end.\n\nDo not pull the stick while it works.\nPull it only when the screen tells you to." "Start" "$3"
             ;;
@@ -225,13 +228,25 @@ confirm_action() {
 }
 
 CANCELLED=0
+# KIND=update: "install" on an older installation (same payload, own texts).
+KIND=""
+UPDATE_TEXT="An update for Android Auto touch is available."
 if [ -z "$ACTION" ]; then
     round=0
     while :; do
         round=$((round + 1))
+        KIND=""
         case "$COMBINED_AA:$COMBINED_TT" in
             payload-invalid:*|*:payload-invalid)
                 fail "the installer files on the stick are damaged"
+                ;;
+            outdated:installed)
+                mzd_ask3 "$STATE_TEXT\n\n$UPDATE_TEXT\nWhat do you want to do?" "Update" "Remove both" "Cancel"
+                case $? in 0) ACTION=install; KIND=update; LABEL=Update ;; 1) ACTION=uninstall; LABEL="Remove both" ;; *) ACTION=exit ;; esac
+                ;;
+            outdated:*)
+                mzd_ask3 "$STATE_TEXT\n\n$UPDATE_TEXT\nWhat do you want to do?" "Update" "Remove" "Cancel"
+                case $? in 0) ACTION=install; KIND=update; LABEL=Update ;; 1) ACTION=uninstall; LABEL=Remove ;; *) ACTION=exit ;; esac
                 ;;
             ours:installed)
                 mzd_ask3 "$STATE_TEXT\n\nWhat do you want to do?" "Remove both" "Diagnosis" "Cancel"
@@ -247,7 +262,7 @@ if [ -z "$ACTION" ]; then
                 ;;
         esac
         [ "$ACTION" = exit ] && { CANCELLED=1; break; }
-        confirm_action "$ACTION" "$LABEL" "Back" && break
+        confirm_action "${KIND:-$ACTION}" "$LABEL" "Back" && break
         mzd_log "confirmation: Back to the start dialog"
         ACTION=exit
         # A stick left in the car never loops for ever.
@@ -256,15 +271,25 @@ if [ -z "$ACTION" ]; then
 else
     # ACTION.txt (advanced use): still confirm every change on the screen, so
     # a stick that stays in the car never changes anything by itself.
-    case "$ACTION" in
-        install) confirm_action install "Install (ACTION.txt)" Cancel || { ACTION=exit; CANCELLED=1; } ;;
-        uninstall) confirm_action uninstall "Remove (ACTION.txt)" Cancel || { ACTION=exit; CANCELLED=1; } ;;
+    case "$ACTION:$COMBINED_AA" in
+        install:outdated)
+            KIND=update
+            confirm_action update "Update (ACTION.txt)" Cancel || { ACTION=exit; CANCELLED=1; }
+            ;;
+        install:*) confirm_action install "Install (ACTION.txt)" Cancel || { ACTION=exit; CANCELLED=1; } ;;
+        uninstall:*) confirm_action uninstall "Remove (ACTION.txt)" Cancel || { ACTION=exit; CANCELLED=1; } ;;
     esac
 fi
 
 # Shown at once after the confirmation, until the payload's next message.
 case "$ACTION" in
-    install) mzd_popup_busy "Installing...\n\nDo not pull the stick and\ndo not press anything." ;;
+    install)
+        if [ "$KIND" = update ]; then
+            mzd_popup_busy "Updating...\n\nDo not pull the stick and\ndo not press anything."
+        else
+            mzd_popup_busy "Installing...\n\nDo not pull the stick and\ndo not press anything."
+        fi
+        ;;
     uninstall) mzd_popup_busy "Removing...\n\nDo not pull the stick and\ndo not press anything." ;;
     diagnose) mzd_popup_busy "Writing the report...\n\nDo not pull the stick." ;;
 esac
